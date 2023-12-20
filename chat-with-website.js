@@ -3,12 +3,14 @@ import axios from "axios";
 import "dotenv/config";
 import { XMLParser } from "fast-xml-parser";
 import { JSDOM } from "jsdom";
-import { RetrievalQAChain } from "langchain/chains";
+import { LLMChain, RetrievalQAChain } from "langchain/chains";
 import { ChatOpenAI } from "langchain/chat_models/openai";
 import { Document } from "langchain/document";
 import { BaseDocumentLoader } from "langchain/document_loaders/base";
 import { HtmlToTextTransformer } from "langchain/document_transformers/html_to_text";
 import { OpenAIEmbeddings } from "langchain/embeddings/openai";
+import { OpenAI } from "langchain/llms/openai";
+import { PromptTemplate } from "langchain/prompts";
 import { RecursiveCharacterTextSplitter } from "langchain/text_splitter";
 import { RedisVectorStore } from "langchain/vectorstores/redis";
 import readline from "readline";
@@ -77,15 +79,13 @@ const finish = async () => {
 };
 
 async function main() {
-    prompt.write("❓Ask anything about my website!\n");
-
     const xmlLoader = new SitemapLoader("https://niara.ai/page-sitemap.xml");
 
     const docs = await xmlLoader.load();
 
     const splitter = new RecursiveCharacterTextSplitter({
-        chunkSize: 3000,
-        chunkOverlap: 300,
+        chunkSize: 1000,
+        chunkOverlap: 200,
     });
     const transformer = new HtmlToTextTransformer();
 
@@ -105,14 +105,14 @@ async function main() {
         new OpenAIEmbeddings(),
         {
             redisClient: client,
-            indexName: "chat-with-wordpress",
+            indexName: "chat-with-website",
         }
     );
 
     /* Usage as part of a chain */
     const model = new ChatOpenAI({
         model: "gpt-3.5-turbo",
-        temperature: 0.7,
+        temperature: 0,
         prefixMessages: [
             {
                 role: "system",
@@ -120,10 +120,11 @@ async function main() {
             },
         ],
     });
-    const chain = RetrievalQAChain.fromLLM(model, vectorStore.asRetriever(4), {
+    const chat = RetrievalQAChain.fromLLM(model, vectorStore.asRetriever(1), {
         returnSourceDocuments: true,
-        // verbose: true,
     });
+
+    prompt.write("❓ Ask anything about my website!\n");
     const loopQuestion = () => {
         prompt.question("> ", async (question) => {
             if (
@@ -134,13 +135,39 @@ async function main() {
             ) {
                 await finish();
             }
-            const chainRes = await chain.call({
+            const contextChain = await chat.call({
                 query: question,
-                verbose: true,
+                // verbose: true,
             });
-            console.log(`R: ${chainRes.text}\n`);
+            const context = contextChain.text;
+            const sources = contextChain.sourceDocuments.map(
+                (source) =>
+                    `\n- [${source.metadata.title}](${source.metadata.url})`
+            );
+
+            const responseTemplate = `Você é uma assistente de IA que responde perguntas sobre um website. Dado o contexto e fonte abaixo, responda à duvida do usuário. Caso você não saiba, responda 'Não sei'.\n"
+            Contexto: {context}
+            Fonte: {sources}
+            Pergunta: {question}`;
+            const responsePromptTemplate = new PromptTemplate({
+                template: responseTemplate,
+                inputVariables: ["context", "sources", "question"],
+            });
+            const responseChain = new LLMChain({
+                llm: new OpenAI({ model: "gpt-4", temperature: 0.7 }),
+                prompt: responsePromptTemplate,
+                // verbose: true,
+            });
+
+            const response = await responseChain.call({
+                context,
+                sources,
+                question,
+            });
+
+            console.log(`${response.text}\n`);
             console.log(
-                `Fonte: ${chainRes.sourceDocuments.map(
+                `Fonte: ${contextChain.sourceDocuments.map(
                     (source) =>
                         `\n- [${source.metadata.title}](${source.metadata.url})`
                 )}\n`
