@@ -77,7 +77,7 @@ const finish = async () => {
 };
 
 async function main() {
-    prompt.write("📝 Chat with WordPress Post!\n");
+    prompt.write("❓Ask anything about my website!\n");
 
     const xmlLoader = new SitemapLoader("https://niara.ai/page-sitemap.xml");
 
